@@ -128,7 +128,7 @@ void reset(Data& data) noexcept
 
 int main()
 {
-	TestParallel<Data> test(action, check, reset, 1000);
+	TestParallel<Data> test(action, check, reset, 10000);
 	test.wait();
 	std::cout << test.isSuccess() << std::endl;
 }
