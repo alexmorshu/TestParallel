@@ -1,7 +1,7 @@
 #include <atomic>
 #include <thread>
 #include <vector>
-
+#include <iostream>
 
 
 class Barrier final
@@ -24,9 +24,10 @@ private:
 		std::size_t count;
 		do
 		{
-			count = count_.load(std::memory_order_acquire);
+			count = count_.load(std::memory_order_relaxed);
 		}
 		while(count != max_);
+		std::atomic_thread_fence(std::memory_order_acquire);
 	}
 	void increase_() noexcept
 	{
@@ -44,14 +45,14 @@ class TestParallel
 {
 public:
 	TestParallel(
-			void (*Action)(Data&) noexcept, bool (*CheckData)(const Data&) noexcept
-			, void (*ResetData)(Data&) noexcept, std::size_t count = 100'000
-		    ):countCores_(std::thread::hardware_concurrency()), b1(countCores_), b2(countCores_), b3(countCores_)
+			void (*Action)(Data&, unsigned int, unsigned int) noexcept, bool (*CheckData)(const Data&) noexcept
+			, void (*ResetData)(Data&) noexcept, std::size_t countThread, std::size_t count = 100'000
+		    ):countCores_(countThread), b1(countCores_), b2(countCores_), b3(countCores_)
 		      	, count_(count)
 	{
 		threads_.reserve(countCores_);
 		for(unsigned int i = 0; i < countCores_; i++)
-			threads_.push_back(std::thread(TestParallel<Data>::worker_, this, Action, CheckData, ResetData));
+			threads_.push_back(std::thread(TestParallel<Data>::worker_, this, Action, CheckData, ResetData, i));
 	}
 
 	void wait()
@@ -69,8 +70,8 @@ public:
 
 private:	
 	static void worker_(TestParallel* p,
-			void (*Action)(Data&) noexcept, bool (*CheckData)(const Data&) noexcept
-			,void (*ResetData)(Data&) noexcept
+			void (*Action)(Data&, unsigned int, unsigned int) noexcept, bool (*CheckData)(const Data&) noexcept
+			,void (*ResetData)(Data&) noexcept, unsigned int num
 		)
 	{
 		for(std::size_t i = 0; i < p->count_; i++)
@@ -80,7 +81,7 @@ private:
 				break;
 			}
 			p->b1.increaseWait();
-			Action(p->data_);
+			Action(p->data_, num, p->countCores_);
 			p->b3.clear();
 			p->b2.increaseWait();
 			if(!CheckData(p->data_))
@@ -106,29 +107,41 @@ private:
 
 struct Data
 {
-	int i = 0;
-	std::atomic<int> realI = 0;
+	int r1 = 0;
+	int r2 = 0;
+	std::atomic<int> X = 0;
+	std::atomic<int> Y = 0;
 };
 
-void action(Data& data) noexcept
+void action(Data& data, unsigned int num, unsigned count) noexcept
 {
-	data.i++;
-	data.realI++;
+	if(num == 0)
+	{
+		data.r1 = data.Y.load(std::memory_order_relaxed);
+		data.X.store(1, std::memory_order_relaxed);
+	}
+	else
+	{
+		data.r2 = data.X.load(std::memory_order_relaxed);
+		data.Y.store(1, std::memory_order_relaxed);
+	}
 }
 
 bool check(const Data& data) noexcept
 {
-	return data.i == data.realI;	
-}
-void reset(Data& data) noexcept
-{
-	data.i = 0;
-	data.realI = 0;
+	return !(data.r1 == 1 && data.r2 == 1);
 }
 
+void reset(Data& data) noexcept
+{
+	data.r1 = 0;
+	data.r2 = 0;
+	data.X = 0;
+	data.Y = 0;
+}
 int main()
 {
-	TestParallel<Data> test(action, check, reset, 10000);
+	TestParallel<Data> test(action, check, reset,2 , 1000000);
 	test.wait();
 	std::cout << test.isSuccess() << std::endl;
 }
